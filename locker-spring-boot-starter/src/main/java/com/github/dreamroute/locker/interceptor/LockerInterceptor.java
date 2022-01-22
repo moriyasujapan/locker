@@ -73,7 +73,7 @@ import net.sf.jsqlparser.statement.update.Update;
 public class LockerInterceptor implements Interceptor, ApplicationListener<ContextRefreshedEvent> {
 
     private final LockerProperties lockerProperties;
-    private final MybatisProperties mybatisProperties;
+    private final MybatisProperties mybatisProperties;  //是否将下划线映射到驼峰式
 
     private List<String> ids = new ArrayList<>();
     private final Map<String, String> selectMap = new ConcurrentHashMap<>();
@@ -83,7 +83,7 @@ public class LockerInterceptor implements Interceptor, ApplicationListener<Conte
 
     public LockerInterceptor(LockerProperties lockerProperties, MybatisProperties mybatisProperties) {
         this.lockerProperties = lockerProperties;
-        this.mybatisProperties = mybatisProperties;
+        this.mybatisProperties = mybatisProperties; //加到构造函数
     }
 
     @Override
@@ -122,9 +122,9 @@ public class LockerInterceptor implements Interceptor, ApplicationListener<Conte
             String[] split = selectSql.split(":");
             String idName = split[1];
             String sql = split[0];
-            //将下划线映射为CamelCase的话，则将其转换
+            //如果是SnakeCase, 则转换为CamelCase. 否则无法自动抛出异常, 因为参数值不能设置为下面的SELECTSQL
             if (mybatisProperties.isMapUnderscodeToCamelCase()) {
-              idName = CaseFormat.LOWER_UNDERSCORE.to(CaseFormat.LOWER_CAMEL, idName);
+              idName = CaseFormat.LOWER_UNDERSCORE.to(CaseFormat.LOWER_CAMEL, idName.toLowerCase());
             }
             Executor executor = (Executor) (processTarget(invocation.getTarget()));
             Transaction transaction = executor.getTransaction();
@@ -148,17 +148,9 @@ public class LockerInterceptor implements Interceptor, ApplicationListener<Conte
             }
             selectStmt.close();
 
-            Long currentVersion = null;
             Object cv = ReflectUtil.getFieldValue(invocation.getArgs()[1], lockerProperties.getVersionColumn());
-            if (Objects.equals(cv.getClass(), Long.class) || Objects.equals(cv.getClass(), long.class)) {
-              currentVersion = (long)cv;
-            } else if(Objects.equals(cv.getClass(), Integer.class) || Objects.equals(cv.getClass(), int.class)) {
-              currentVersion = Long.valueOf(String.valueOf(cv));
-            } else if(Objects.equals(cv.getClass(), Short.class) || Objects.equals(cv.getClass(), short.class)) {
-              currentVersion = Long.valueOf(String.valueOf(cv));
-            } else {
-              throw new TypeException(Constent.LOG_PREFIX + "property type error, the type of version is "+cv.getClass().getName()+"the type of version property must be Long or long or Integer or int or Short or short.");
-            }
+            Long currentVersion = convertToLong(cv);    //原始类型转换为Long
+
             if (v != null && v > currentVersion) {
                 throw new DataHasBeenModifyException("data has been modify");
             }
@@ -200,20 +192,8 @@ public class LockerInterceptor implements Interceptor, ApplicationListener<Conte
         Object param = ph.getParameterObject();
         MetaObject mo = this.config.newMetaObject(param);
         Object v = mo.getValue(lockerProperties.getVersionColumn());
-        Long value = Long.MIN_VALUE;
-        Object incrementedValue = null;
-        if (Objects.equals(v.getClass(), Long.class) || Objects.equals(v.getClass(), long.class)) {
-          value = (long) v;
-          incrementedValue = value + 1;
-        } else if(Objects.equals(v.getClass(), Integer.class) || Objects.equals(v.getClass(), int.class)) {
-          value = Long.valueOf(String.valueOf((int) v));
-          incrementedValue = Integer.valueOf(String.valueOf(value + 1));
-        } else if(Objects.equals(v.getClass(), Short.class) || Objects.equals(v.getClass(), short.class)) {
-          value = Long.valueOf(String.valueOf((short) v));
-          incrementedValue = Short.valueOf(String.valueOf(value + 1));
-        } else {
-          throw new TypeException(Constent.LOG_PREFIX + "property type error, the type of version is "+v.getClass().getName()+"the type of version property must be Long or long or Integer or int or Short or short.");
-        }
+        Long value = convertToLong(v);  //原始类型转换为Long
+        Object incrementedValue = getVersionObjectValue(v.getClass(), value +1); //Long转换为原始类型
 
         ParameterMapping versionMapping = new ParameterMapping.Builder(this.config, lockerProperties.getVersionColumn(), Object.class).build();
         TypeHandler typeHandler = versionMapping.getTypeHandler();
@@ -240,6 +220,48 @@ public class LockerInterceptor implements Interceptor, ApplicationListener<Conte
         return result;
     }
 
+    /**
+     * convert long value to designated class instance
+     * long转换为指定的类型
+     * @param clazz
+     * @param value
+     * @return
+     */
+    private Object getVersionObjectValue(Class<?> clazz, Long value) {
+      Object result = null;
+      if (Objects.equals(clazz, Long.class) || Objects.equals(clazz, long.class)) {
+        result = value + 1;
+      } else if(Objects.equals(clazz, Integer.class) || Objects.equals(clazz, int.class)) {
+        result = Integer.valueOf(String.valueOf(value + 1));
+      } else if(Objects.equals(clazz, Short.class) || Objects.equals(clazz, short.class)) {
+        result = Short.valueOf(String.valueOf(value + 1));
+      } else {
+        throw new TypeException(Constent.LOG_PREFIX + "property type error, the type of version is "+clazz.getName()+"the type of version property must be Long or long or Integer or int or Short or short.");
+      }
+      return result;
+    }
+    
+    /**
+     * convert long, int, short to long.
+     * long,int,short转换为long
+     * 
+     * @param o
+     * @return
+     */
+    private Long convertToLong(Object o) {
+      Long result = null;
+      if (Objects.equals(o.getClass(), Long.class) || Objects.equals(o.getClass(), long.class)) {
+        result = (long)o;
+      } else if(Objects.equals(o.getClass(), Integer.class) || Objects.equals(o.getClass(), int.class)) {
+        result = Long.valueOf(String.valueOf(o));
+      } else if(Objects.equals(o.getClass(), Short.class) || Objects.equals(o.getClass(), short.class)) {
+        result = Long.valueOf(String.valueOf(o));
+      } else {
+        throw new TypeException(Constent.LOG_PREFIX + "property type error, the type of version is "+o.getClass().getName()+"the type of version property must be Long or long or Integer or int or Short or short.");
+      }
+      return result;
+    }
+    
     private void updateSql() {
         parseAnno();
         update();
